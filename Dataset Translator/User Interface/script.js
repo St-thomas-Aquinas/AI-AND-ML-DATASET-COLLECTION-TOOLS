@@ -1,0 +1,181 @@
+const HF_API = "https://st-thomas-of-aquinas-no-language-left-behind-api.hf.space/translate";
+
+/* ---------- Tabs ---------- */
+function showTab(tab) {
+  const textCard = document.getElementById("textCard");
+  const docCard = document.getElementById("docCard");
+  const textTab = document.getElementById("textTab");
+  const docTab = document.getElementById("docTab");
+
+  if(tab === 'text') {
+    textCard.style.display = 'block';
+    docCard.style.display = 'none';
+    textTab.classList.add('active');
+    docTab.classList.remove('active');
+  } else {
+    textCard.style.display = 'none';
+    docCard.style.display = 'block';
+    textTab.classList.remove('active');
+    docTab.classList.add('active');
+  }
+}
+
+/* ---------- Smart Sentence-based Chunking with Overlap ---------- */
+function chunkBySentences(text, maxLength = 500, overlap = 50) {
+  const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+  const chunks = [];
+  let current = "";
+
+  for (let i = 0; i < sentences.length; i++) {
+    const sentence = sentences[i].trim();
+    if ((current + " " + sentence).length > maxLength) {
+      if (current) chunks.push(current.trim());
+      // Start new chunk with overlap
+      const overlapText = current.slice(-overlap);
+      current = overlapText + " " + sentence;
+    } else {
+      current += (current ? " " : "") + sentence;
+    }
+  }
+  if (current) chunks.push(current.trim());
+  return chunks;
+}
+
+/* ---------- Text Translation ---------- */
+async function translateText() {
+  const text = document.getElementById("inputText").value.trim();
+  const sourceLang = document.getElementById("sourceLang").value;
+  const targetLang = document.getElementById("targetLang").value;
+  const output = document.getElementById("outputText");
+  const loading = document.getElementById("textLoading");
+  const btn = document.getElementById("translateTextBtn");
+
+  if (!text) {
+    output.value = "⚠️ Please enter text.";
+    return;
+  }
+
+  loading.style.display = "inline-block";
+  btn.disabled = true;
+  output.value = "";
+
+  const chunks = chunkBySentences(text, 500, 50);
+  let translatedText = "";
+
+  for (let i = 0; i < chunks.length; i++) {
+    output.value = `Translating chunk ${i + 1} of ${chunks.length}...`;
+    const chunkTranslation = await translateWithNLLB(chunks[i], sourceLang, targetLang);
+    translatedText += chunkTranslation + "\n\n";
+  }
+
+  output.value = translatedText.trim();
+  loading.style.display = "none";
+  btn.disabled = false;
+}
+
+/* ---------- Document Translation ---------- */
+async function translateDocument() {
+  const file = document.getElementById("fileInput").files[0];
+  const sourceLang = document.getElementById("sourceLang").value;
+  const targetLang = document.getElementById("targetLang").value;
+  const status = document.getElementById("fileStatus");
+  const loading = document.getElementById("docLoading");
+  const btn = document.getElementById("translateDocBtn");
+
+  if (!file) {
+    status.value = "⚠️ Please select a document.";
+    return;
+  }
+
+  loading.style.display = "inline-block";
+  btn.disabled = true;
+  status.value = "";
+
+  let text = "";
+
+  try {
+    if (file.type === "text/plain") {
+      text = await file.text();
+    } else if (file.type === "application/pdf") {
+      const buffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        text += content.items.map(item => item.str).join(" ") + "\n";
+      }
+    } else if (file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+      const buffer = await file.arrayBuffer();
+      const result = await mammoth.extractRawText({ arrayBuffer: buffer });
+      text = result.value;
+    } else {
+      throw new Error("Unsupported file type.");
+    }
+  } catch (err) {
+    status.value = `❌ Error reading file: ${err.message}`;
+    loading.style.display = "none";
+    btn.disabled = false;
+    return;
+  }
+
+  status.value = `🌍 Translating document...`;
+
+  const chunks = chunkBySentences(text, 500, 50);
+  let translatedText = "";
+
+  for (let i = 0; i < chunks.length; i++) {
+    status.value = `Translating chunk ${i + 1} of ${chunks.length}...`;
+    const chunkTranslation = await translateWithNLLB(chunks[i], sourceLang, targetLang);
+    translatedText += chunkTranslation + "\n\n";
+  }
+
+  status.value = translatedText.trim();
+  downloadFile(translatedText, file.name);
+
+  loading.style.display = "none";
+  btn.disabled = false;
+}
+
+/* ---------- API Call ---------- */
+async function translateWithNLLB(text, sourceLang, targetLang) {
+  try {
+    const response = await fetch(HF_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        source_lang: sourceLang,
+        target_lang: targetLang
+      })
+    });
+
+    const data = await response.json();
+    return data.translation || "❌ Translation failed.";
+  } catch (e) {
+    console.error(e);
+    return "⚠️ API error.";
+  }
+}
+
+/* ---------- Download ---------- */
+function downloadFile(text, originalName) {
+  const blob = new Blob([text], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "translated_" + originalName.replace(/\.\w+$/, ".txt");
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ---------- Fullscreen ---------- */
+function toggleFullscreen(id) {
+  const el = document.getElementById(id);
+  if (!document.fullscreenElement) {
+    el.classList.add("fullscreen");
+    el.requestFullscreen();
+  } else {
+    el.classList.remove("fullscreen");
+    document.exitFullscreen();
+  }
+}
